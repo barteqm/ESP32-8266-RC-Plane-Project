@@ -10,12 +10,13 @@
 #include "Wire.h"
 #include <Servo.h>
 #define OUTPUT_READABLE_ACCELGYRO
+// FLIGHT SYSTEMS THRESHOLDS (to be continued;)
 #define MAX_TILT 8192 //45deg
 #define MIN_TILT 8192//-45Deg
 #define STALL_WARN_THRESHOLD 5461 //30deg
 #define FALL_WARN_THRESHOLD -5461//30deg
 
-//JOYSTICKI
+//JOYSTICKS
 int X = 0;
 int Y = 0;
 int X2 = 128;
@@ -23,9 +24,9 @@ int Y2 = 128;
 int X2_ap = 128;
 int Y2_ap = 128;
 int Calib = 0;
-// PARAMETRY LOTU
+// FLIGHT PARAMETERS
 int T = 512; // THROTTLE
-// SILNIKI
+// MOTORS
 int mot_L = 0;
 int mot_R = 0;
 int CALIB_L = 0;
@@ -34,7 +35,7 @@ bool mot_power = false;
 bool connection = false;
 bool motors = false;
 bool TelemetrySend = false;
-//  STER WYSOKOSCI
+//  HEIGHT STEERING
 int Serv_1_MAX = 140;
 int Serv_1_MIN = 30;
 int Serv_1_DEF = 90;
@@ -43,10 +44,10 @@ int ServR_VAL = 90;
 int ServL_CAL = 5;//85
 int ServR_CAL = -10;//80
 int Serv_DIFF = 0;
-// ODSWIEZANIE i INNE
+// REFRESHING
 int ServInterval = 100;
 int C = 0;
-/// SYSTEMY
+/// SYSTEMS
 bool AFS_en = 1;
 bool ASS_en = 1;
 bool AP_en = 0;
@@ -56,7 +57,8 @@ bool ASS_act = 0;
 bool AP_act = 0;
 bool TH_act = 0;
 bool full_telemetry = false;
-// ZYROSKOP
+bool gyro_telemetry = false;
+// Gyroscope Init
 MPU6050 accelgyro;
 
 int16_t ax, ay, az;
@@ -65,6 +67,7 @@ int16_t gx, gy, gz;
 unsigned long previousMillis = 0;
 unsigned long messageTime = 0;
 unsigned long FlightTime = 0;
+// REMOTE CLIENT MAC address:
 static uint8_t PEER[] {0xA4, 0xCF, 0x12, 0x25, 0x66, 0x85};
 Servo ServL;
 Servo ServR;
@@ -73,9 +76,11 @@ Servo ServR;
 #define REFRESH_MULTIPLIER 1
 #define LIGHT_PIN D4
 ADC_MODE(ADC_VCC);
+// flasher class created to initialize signal light
 Flasher Pos_LED(LIGHT_PIN, 100, 2000);
 Flasher Alert_LED(LIGHT_PIN, 50, 400);
 
+// Printing telemetry thru serial port.
 void SerialTelemetryData() {
 
   if (full_telemetry) {
@@ -105,6 +110,7 @@ void SerialTelemetryData() {
   };
 
   // GYRO
+  if (gyro_telemetry) {
   Serial.print(ax);
   Serial.print(",");
   Serial.print(ay);
@@ -121,7 +127,7 @@ void SerialTelemetryData() {
   Serial.print(",");
   Serial.print(sqrt(pow(gz, 2) + pow(gx, 2) + pow(gy, 2)));
   Serial.println("");
-
+  }
   //  //Serial.print("gX:"); Serial.print(gx);
   //  Serial.print(" gXm:"); Serial.print(map(gx, -32768, 32768, -180, 180)); Serial.print("\t");
   //  //Serial.print("gY:"); Serial.print(gy);
@@ -132,13 +138,14 @@ void SerialTelemetryData() {
 
 void TelemetrySendMessage () {
   uint8_t msg[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-  // 0 - status
-  // 1 - mot_l
-  // 2 - mot_r
-  // 3 - bat_lev 0-4V
-  // 4 - Serv L
-  // 5 - Serv R
-  // dotad
+  // Protocol description
+  // 0 - Status switches in 8bit binary format!
+  // 1 - mot_l - MOTOR L Power
+  // 2 - mot_r - MOTOR R Power
+  // 3 - bat_lev 0-4V - Battery level - currently unsupported
+  // 4 - Serv L - left servo value
+  // 5 - Serv R - right servo value
+  // END OF ACTUAL TELEMETRY
   // 6 - Tilt Y
   // 7 - Tilt Z
   //8 - Tilst X Y Z
@@ -159,31 +166,23 @@ void TelemetrySendMessage () {
   msg[5] = ServR_VAL;
   msg[6] = map(ax , -16384 , 16384 , 0, 255);
   msg[7] = map(ay , -16384 , 16384 , 0, 255);
-
+// Send telemetry thru ESP NOW:
   WifiEspNow.send(PEER, msg, sizeof(msg));
 }
-
+// recieving control data
 void printReceivedMessage(const uint8_t mac[6], const uint8_t* buf, size_t count, void* cbarg) {
-  //  Serial.printf("Message from %02X:%02X:%02X:%02X:%02X:%02X\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  //  for (int i = 0; i < count; ++i) {
-  //    Serial.print(buf[i]);
-  //    Serial.print(" , ");
-  //  }
-  // Serial.println();
-  // buf 0 = 0 - motors off
-  // buf 0 = 1-9 - motors on
-  // buf 0 = 2 - motors on - telemetry request
-  //  buf 0 = 12 - telemetry request motors off
 
+// MAIN MOTOR POWER SWITCH
   if (bitRead(buf[0], 0)) {
     mot_power = true;
   }  else {
     mot_power = false;
   };
 
-
+// MAIN JOYSTICK X and Y VALUES ARE ENCODED IN 2 8bit values (1-4) to extend precision from 256 to 512 levels
   Y = buf[1] - buf[2];
   X = buf[3] - buf[4];
+  // MOTORS CALIBRATION VALUE 0-255
   Calib = buf[5];
   if (Calib > 128) {
     CALIB_L = map(Calib, 128, 255, 0, 255);
@@ -193,11 +192,13 @@ void printReceivedMessage(const uint8_t mac[6], const uint8_t* buf, size_t count
     CALIB_R = map(Calib, 128, 255, 0, 255);
     CALIB_L = 0;
   };
+  // THROTTLE VALUE BY default throttle is set from 0-1024 but in 8bit precision
   T = buf[6] * 2 + 2;
   if (T > 1023) {
     T = 1023;
 
   };
+  // 7th value is an communications refresh interval. When it is 0 telemetry request is sent from remote
   if (buf[7] > 0) {
     ServInterval = buf[7] * REFRESH_MULTIPLIER;
   } else if (buf[7] == 0)
@@ -205,25 +206,28 @@ void printReceivedMessage(const uint8_t mac[6], const uint8_t* buf, size_t count
     TelemetrySendMessage();
   }
   messageTime = millis();
+  // second joystick is 8 bit precision 
   X2 = buf[8];
   Y2 = buf[9];
-
-  AFS_en = bitRead(buf[0], 1);
-  ASS_en = bitRead(buf[0], 2);
-  AP_en = bitRead(buf[0], 3);
-  TH_en = bitRead(buf[0], 4);
+// onboard safety systems 
+  AFS_en = bitRead(buf[0], 1); // ANTI FALL SYSTEM
+  ASS_en = bitRead(buf[0], 2); // ANTI STALL SYSTEM
+  AP_en = bitRead(buf[0], 3); // AUTO PILOT - enables joystick to approach desired angle of flight
+  TH_en = bitRead(buf[0], 4); // TILT HELPER - helps to maintain proper level flight when remote control is offline
 }
 
 void setup() {
+  // INITIAL SETUP
   Serial.begin(115200);
   Serial.println();
-  // SILNIKI
+  // ENGINES INITIALIZE
   digitalWrite(MOT_L_PIN, 0);
   digitalWrite(MOT_R_PIN, 0);
-  // ZYROSKOP
+  // GYROSCOPE
 
   Serial.println("Initializing I2C devices...");
   Wire.begin(D1, D2);
+  // MPU6050
   accelgyro.initialize();
   accelgyro.setDLPFMode(MPU6050_DLPF_BW_5);
 
@@ -242,6 +246,9 @@ void setup() {
   //  Serial.print(accelgyro.getYGyroOffset()); Serial.print("\t"); // 0
   //  Serial.print(accelgyro.getZGyroOffset()); Serial.print("\t"); // 0
   //  Serial.print("\n");
+
+
+  // OFFSET VALUES HAS TO BE CHANGED AND DETERMINED TO LEVEL FLIGHT
   accelgyro.setXGyroOffset(230);
   accelgyro.setYGyroOffset(-27);
   accelgyro.setZGyroOffset(37);
@@ -256,7 +263,7 @@ void setup() {
   Serial.print(accelgyro.getZGyroOffset()); Serial.print("\t"); // 0
   Serial.print("\n");
 
-  // TEST SERW
+  // TESTING SERVOES
   ServL.attach(D5);
   ServR.attach(D6);
   delay(500);
@@ -269,7 +276,7 @@ void setup() {
   ServL.write(Serv_1_DEF + ServL_CAL);
   ServR.write(Serv_1_DEF + ServR_CAL);
   delay(500);
-  /// LACZNOSC
+  /// COMMUNICATION CONFIG
   WiFi.persistent(false);
   WiFi.mode(WIFI_AP);
   WiFi.softAP("ESPNOW", nullptr, 3);
@@ -283,7 +290,7 @@ void setup() {
     Serial.println("WifiEspNow.begin() failed");
     ESP.restart();
   }
-  // Odczyt
+  // COMMUNICATION INITIALISATION
   WifiEspNow.onReceive(printReceivedMessage, nullptr);
 
   ok = WifiEspNow.addPeer(PEER);
@@ -298,8 +305,9 @@ void setup() {
     Serial.print("ML, MR,jX,jY,j2X,j2Y,Th,SvoL,SvoR,SvoDiff,A0,");
   }
   // GYROS
+  if (gyro_telemetry) {
   Serial.println("ax,ay,gx,gy");
-  //    Serial.println("");
+}
 }
 void loop() {
 
@@ -392,29 +400,12 @@ void loop() {
     };
 
 
-
-
-    // servos
-    //  Serv_DIFF = abs(map(Y2, 0, 255, 1, 256));
-    //    if (Y2 > 127) {
-    //      Serv_DIFF = abs(map(Y2, 127, 255, 0, 255));
-    //      ServL_VAL = map(X2 + Serv_DIFF, 0, 255, Serv_1_MIN, Serv_1_MAX);
-    //      ServR_VAL = map((X2 - Serv_DIFF) * -1, -255, 0, Serv_1_MIN, Serv_1_MAX) ;
-    //    } else if (Y2 < 127) {
-    //      Serv_DIFF = abs(map(Y2, 0, 127, 0, 255));
-    //      ServL_VAL = map(X2 - Serv_DIFF, 0, 255, Serv_1_MIN, Serv_1_MAX);
-    //      ServR_VAL = map((X2 + Serv_DIFF) * -1, -255, 0, Serv_1_MIN, Serv_1_MAX) ;
-    //    } else {
-
-    //    ServoY.write(map(Y, -255, 255, 0, 180));
-    //odtad debug
-
     // WHEN CONNECTED ---------------------------------------------------------------------
   };
 
 
 
-  // Poza glownym taktowaniem-------------------------------------------------------------------
+  // OUT OF MAIN REFRESH INTERVAL-------------------------------------------------------------------
 
 
   if (connection) {
